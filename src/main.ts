@@ -1,9 +1,3 @@
-/**
- * 任务管理插件：跨库总任务中心。
- * - 入口：注册视图 / 命令 / 设置页，加载任务数据
- * - 数据：读取中心 tasks.json + 扫描各库笔记待办(见 fsbridge.ts)
- * - 设置：可配置知识库根目录（留空 = 单库模式）
- */
 import { App, Plugin, PluginSettingTab, Setting, FileSystemAdapter } from "obsidian";
 import { TaskView, VIEW_TYPE_TASK } from "./view";
 import {
@@ -18,6 +12,7 @@ import {
   compareTasks,
   normalizeTask,
   advanceDue,
+  keyOf,
 } from "./fsbridge";
 
 interface TaskSettings {
@@ -31,6 +26,8 @@ export default class TaskManager extends Plugin {
   settings: TaskSettings = { ...DEFAULT_SETTINGS };
   centerTasks: Task[] = [];
   scanned: Task[] = [];
+  /** 被用户删除的「扫出来的任务」的 key，合并时永久排除 */
+  ignored: string[] = [];
 
   async onload() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -69,13 +66,15 @@ export default class TaskManager extends Plugin {
 
   refreshFromDisk() {
     const root = this.getRoot();
-    this.centerTasks = loadCenter(root);
+    const data = loadCenter(root);
+    this.centerTasks = data.tasks;
+    this.ignored = data.ignored;
     this.scanned = scanAll(root);
     this.broadcastChange();
   }
 
   getAll(): Task[] {
-    return mergeTasks(this.centerTasks, this.scanned)
+    return mergeTasks(this.centerTasks, this.scanned, this.ignored)
       .map(normalizeTask)
       .sort(compareTasks);
   }
@@ -87,6 +86,10 @@ export default class TaskManager extends Plugin {
       void leaf.setViewState({ type: VIEW_TYPE_TASK, active: true });
     }
     this.app.workspace.revealLeaf(leaf);
+  }
+
+  private saveAll() {
+    saveCenter(this.getRoot(), { tasks: this.centerTasks, ignored: this.ignored });
   }
 
   async saveSettings() {
@@ -103,7 +106,7 @@ export default class TaskManager extends Plugin {
       source: { kind: "personal" },
     };
     this.centerTasks.push(task);
-    saveCenter(this.getRoot(), this.centerTasks);
+    this.saveAll();
     this.broadcastChange();
     return task;
   }
@@ -114,16 +117,23 @@ export default class TaskManager extends Plugin {
     const normalized = { ...patch, recur: (patch.recur as Recur) || undefined };
     this.centerTasks = this.centerTasks.filter((t) => t.id !== exist.id);
     this.centerTasks.push({ ...exist, ...normalized });
-    saveCenter(this.getRoot(), this.centerTasks);
+    this.saveAll();
     this.broadcastChange();
   }
 
   async removeTask(id: string) {
-    const exist = this.getAll().find((t) => t.id === id);
+    const exist = this.getAll().find((x) => x.id === id);
+    if (exist) {
+      const inCenter = this.centerTasks.some((x) => x.id === id);
+      // 若删的是「扫出来的任务」(不在中心)，记录其 key 以永久排除
+      if (!inCenter) {
+        const k = keyOf(exist);
+        if (!this.ignored.includes(k)) this.ignored.push(k);
+      }
+    }
     this.centerTasks = this.centerTasks.filter((t) => t.id !== id);
-    saveCenter(this.getRoot(), this.centerTasks);
+    this.saveAll();
     this.broadcastChange();
-    void exist;
   }
 
   async cycleStatus(id: string) {
@@ -167,7 +177,7 @@ export default class TaskManager extends Plugin {
       source: { kind: "personal" },
     };
     this.centerTasks = [...this.centerTasks.filter((x) => x.id !== copy.id), copy];
-    saveCenter(this.getRoot(), this.centerTasks);
+    this.saveAll();
     this.broadcastChange();
   }
 

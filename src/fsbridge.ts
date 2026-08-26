@@ -218,23 +218,35 @@ export function getCenterFile(root: string): string {
   return path.join(root, "任务", "tasks.json");
 }
 
-export function loadCenter(root: string): Task[] {
+export interface CenterData {
+  tasks: Task[];
+  ignored: string[];
+}
+
+export function loadCenter(root: string): CenterData {
   const f = getCenterFile(root);
   try {
     if (fs.existsSync(f)) {
-      const raw = JSON.parse(fs.readFileSync(f, "utf8")) as { tasks?: Task[] };
-      return raw.tasks ?? [];
+      const raw = JSON.parse(fs.readFileSync(f, "utf8")) as {
+        tasks?: Task[];
+        ignored?: string[];
+      };
+      return { tasks: raw.tasks ?? [], ignored: raw.ignored ?? [] };
     }
   } catch {
     /* ignore */
   }
-  return [];
+  return { tasks: [], ignored: [] };
 }
 
-export function saveCenter(root: string, tasks: Task[]) {
+export function saveCenter(root: string, data: CenterData) {
   const f = getCenterFile(root);
   fs.mkdirSync(path.dirname(f), { recursive: true });
-  fs.writeFileSync(f, JSON.stringify({ tasks }, null, 2), "utf8");
+  fs.writeFileSync(
+    f,
+    JSON.stringify({ tasks: data.tasks, ignored: data.ignored }, null, 2),
+    "utf8"
+  );
 }
 
 export function centerFilePath(root: string): string {
@@ -248,11 +260,18 @@ export function keyOf(t: Task): string {
   return `personal|${t.id}`;
 }
 
-export function mergeTasks(center: Task[], scanned: Task[]): Task[] {
+export function mergeTasks(
+  center: Task[],
+  scanned: Task[],
+  ignored: string[] = []
+): Task[] {
   const centerKeys = new Set(center.map(keyOf));
+  const ignore = new Set(ignored);
   const result = [...center];
   for (const t of scanned) {
-    if (!centerKeys.has(keyOf(t))) result.push(t);
+    const k = keyOf(t);
+    if (ignore.has(k)) continue;
+    if (!centerKeys.has(k)) result.push(t);
   }
   return result;
 }
