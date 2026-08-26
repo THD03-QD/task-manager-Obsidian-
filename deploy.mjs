@@ -1,4 +1,4 @@
-// 把构建产物部署到 D:\WenJian\knowledge 下所有「含 .obsidian 的 vault」的 .obsidian/plugins/<id>
+// 把构建产物部署到指定知识库根目录下所有「含 .obsidian 的 vault」的 .obsidian/plugins/<id>
 import { cpSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -9,7 +9,8 @@ const FILES = [
   ["manifest.json", "manifest.json"],
 ];
 
-const ROOT = "D:/WenJian/knowledge";
+// 通过环境变量 TASK_ROOT 指定知识库根目录，避免硬编码本机路径
+const ROOT = process.env.TASK_ROOT || "";
 const SKIP = new Set([".obsidian", ".git", "node_modules", ".trash", "99-归档"]);
 
 function findVaults(root) {
@@ -32,6 +33,10 @@ function findVaults(root) {
   return acc;
 }
 
+if (!ROOT) {
+  console.error("未设置 TASK_ROOT 环境变量。示例: TASK_ROOT=\"D:/WenJian/knowledge\" node deploy.mjs");
+  process.exit(1);
+}
 const vaults = findVaults(ROOT);
 console.log("vaults:", vaults);
 for (const v of vaults) {
