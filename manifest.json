@@ -1,0 +1,9 @@
+{
+  "id": "task-manager",
+  "name": "任务管理",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "一个按优先级排序的本地任务管理插件：总览 / 详情 / 添加 / 改状态。",
+  "author": "THD03",
+  "isDesktopOnly": true
+}
