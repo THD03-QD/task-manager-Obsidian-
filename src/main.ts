@@ -1,4 +1,10 @@
-import { Plugin } from "obsidian";
+/**
+ * 任务管理插件：跨库总任务中心。
+ * - 入口：注册视图 / 命令 / 设置页，加载任务数据
+ * - 数据：读取中心 tasks.json + 扫描各库笔记待办(见 fsbridge.ts)
+ * - 设置：可配置知识库根目录（留空 = 单库模式）
+ */
+import { App, Plugin, PluginSettingTab, Setting, FileSystemAdapter } from "obsidian";
 import { TaskView, VIEW_TYPE_TASK } from "./view";
 import {
   type Task,
@@ -14,14 +20,24 @@ import {
   advanceDue,
 } from "./fsbridge";
 
+interface TaskSettings {
+  /** 跨库检索的根目录，例如 D:\WenJian\knowledge；留空则只检索当前库 */
+  rootPath: string;
+}
+
+const DEFAULT_SETTINGS: TaskSettings = { rootPath: "" };
+
 export default class TaskManager extends Plugin {
+  settings: TaskSettings = { ...DEFAULT_SETTINGS };
   centerTasks: Task[] = [];
   scanned: Task[] = [];
 
   async onload() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     this.refreshFromDisk();
 
     this.registerView(VIEW_TYPE_TASK, (leaf) => new TaskView(leaf, this));
+    this.addSettingTab(new TaskSettingTab(this.app, this));
 
     this.addRibbonIcon("check-square", "任务管理", () => this.openTaskView());
 
@@ -42,9 +58,19 @@ export default class TaskManager extends Plugin {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_TASK);
   }
 
+  /** 知识库根：优先用户设置，否则用当前库根（单库模式） */
+  getRoot(): string {
+    if (this.settings.rootPath) return this.settings.rootPath;
+    if (this.app.vault.adapter instanceof FileSystemAdapter) {
+      return this.app.vault.adapter.getBasePath();
+    }
+    return "";
+  }
+
   refreshFromDisk() {
-    this.centerTasks = loadCenter();
-    this.scanned = scanAll();
+    const root = this.getRoot();
+    this.centerTasks = loadCenter(root);
+    this.scanned = scanAll(root);
     this.broadcastChange();
   }
 
@@ -63,6 +89,10 @@ export default class TaskManager extends Plugin {
     this.app.workspace.revealLeaf(leaf);
   }
 
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
+
   async addTask(input: NewTaskInput): Promise<Task> {
     const task: Task = {
       id: `personal_${Date.now()}`,
@@ -73,7 +103,7 @@ export default class TaskManager extends Plugin {
       source: { kind: "personal" },
     };
     this.centerTasks.push(task);
-    saveCenter(this.centerTasks);
+    saveCenter(this.getRoot(), this.centerTasks);
     this.broadcastChange();
     return task;
   }
@@ -84,16 +114,15 @@ export default class TaskManager extends Plugin {
     const normalized = { ...patch, recur: (patch.recur as Recur) || undefined };
     this.centerTasks = this.centerTasks.filter((t) => t.id !== exist.id);
     this.centerTasks.push({ ...exist, ...normalized });
-    saveCenter(this.centerTasks);
+    saveCenter(this.getRoot(), this.centerTasks);
     this.broadcastChange();
   }
 
   async removeTask(id: string) {
     const exist = this.getAll().find((t) => t.id === id);
     this.centerTasks = this.centerTasks.filter((t) => t.id !== id);
-    saveCenter(this.centerTasks);
+    saveCenter(this.getRoot(), this.centerTasks);
     this.broadcastChange();
-    // 说明：若删的是「笔记待办」且尚未进中心，下次扫描会重新发现；彻底删除需改源笔记。
     void exist;
   }
 
@@ -138,7 +167,7 @@ export default class TaskManager extends Plugin {
       source: { kind: "personal" },
     };
     this.centerTasks = [...this.centerTasks.filter((x) => x.id !== copy.id), copy];
-    saveCenter(this.centerTasks);
+    saveCenter(this.getRoot(), this.centerTasks);
     this.broadcastChange();
   }
 
@@ -190,5 +219,35 @@ export default class TaskManager extends Plugin {
         leaf.view.refresh();
       }
     });
+  }
+}
+
+class TaskSettingTab extends PluginSettingTab {
+  plugin: TaskManager;
+
+  constructor(app: App, plugin: TaskManager) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl("h2", { text: "任务管理" });
+    new Setting(containerEl)
+      .setName("知识库根目录")
+      .setDesc(
+        "跨库检索的根路径（例如 D:\\WenJian\\knowledge）。留空则只检索当前打开的库（单库模式）。"
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("D:\\WenJian\\knowledge")
+          .setValue(this.plugin.settings.rootPath)
+          .onChange(async (value) => {
+            this.plugin.settings.rootPath = value.trim();
+            await this.plugin.saveSettings();
+            this.plugin.refreshFromDisk();
+          })
+      );
   }
 }

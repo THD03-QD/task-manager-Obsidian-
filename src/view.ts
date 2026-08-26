@@ -1,3 +1,7 @@
+/**
+ * 任务管理视图层：总览列表(按来源分组) / 看板(拖拽) / 统计，以及任务详情、右键菜单与弹窗。
+ * 数据由 TaskManager(main.ts) 提供，本模块只做展示与用户交互。
+ */
 import { App, ItemView, Modal, Notice, Menu, TFile, type WorkspaceLeaf } from "obsidian";
 import type TaskManager from "./main";
 import type { Task, Priority, Status, NewTaskInput, SubTask, Recur } from "./fsbridge";
@@ -174,7 +178,10 @@ export class TaskView extends ItemView {
     const list = container.createDiv({ cls: "task-list" });
 
     if (all.length === 0) {
-      container.createDiv({ cls: "task-empty", text: "暂无任务，点击「＋ 添加任务」开始。" });
+      container.createDiv({
+        cls: "task-empty",
+        text: "暂无任务。点「＋ 添加任务」创建，或到插件设置里配置「知识库根目录」以跨库检索。",
+      });
       return;
     }
 

@@ -51,8 +51,6 @@ export interface NewTaskInput {
 }
 
 // ---------- 路径常量 ----------
-const ROOT = path.resolve("D:", "WenJian", "knowledge");
-const CENTER_FILE = path.join(ROOT, "任务", "tasks.json");
 const PLUGIN_ID = "task-manager";
 const SKIP_DIRS = new Set([
   ".obsidian", ".git", "node_modules", ".trash", "99-归档", ".smart-env",
@@ -68,7 +66,7 @@ function hashString(s: string): string {
 }
 
 // ---------- 扫描 vault ----------
-export function findVaults(root: string = ROOT): string[] {
+export function findVaults(root: string): string[] {
   const acc: string[] = [];
   const walk = (dir: string) => {
     let entries: fs.Dirent[];
@@ -205,8 +203,8 @@ function collectNoteTasks(vault: string): Task[] {
 }
 
 // ---------- 扫描全部 vault → 所有插件任务 + 笔记待办 ----------
-export function scanAll(): Task[] {
-  const vaults = findVaults(ROOT);
+export function scanAll(root: string): Task[] {
+  const vaults = findVaults(root);
   const out: Task[] = [];
   for (const v of vaults) {
     out.push(...readDataJson(v));
@@ -216,10 +214,15 @@ export function scanAll(): Task[] {
 }
 
 // ---------- 中心文件读写 ----------
-export function loadCenter(): Task[] {
+export function getCenterFile(root: string): string {
+  return path.join(root, "任务", "tasks.json");
+}
+
+export function loadCenter(root: string): Task[] {
+  const f = getCenterFile(root);
   try {
-    if (fs.existsSync(CENTER_FILE)) {
-      const raw = JSON.parse(fs.readFileSync(CENTER_FILE, "utf8")) as { tasks?: Task[] };
+    if (fs.existsSync(f)) {
+      const raw = JSON.parse(fs.readFileSync(f, "utf8")) as { tasks?: Task[] };
       return raw.tasks ?? [];
     }
   } catch {
@@ -228,13 +231,14 @@ export function loadCenter(): Task[] {
   return [];
 }
 
-export function saveCenter(tasks: Task[]) {
-  fs.mkdirSync(path.dirname(CENTER_FILE), { recursive: true });
-  fs.writeFileSync(CENTER_FILE, JSON.stringify({ tasks }, null, 2), "utf8");
+export function saveCenter(root: string, tasks: Task[]) {
+  const f = getCenterFile(root);
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, JSON.stringify({ tasks }, null, 2), "utf8");
 }
 
-export function centerFilePath(): string {
-  return CENTER_FILE;
+export function centerFilePath(root: string): string {
+  return getCenterFile(root);
 }
 
 // ---------- 合并（中心为主 + 扫描补充，去重） ----------
