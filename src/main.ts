@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, FileSystemAdapter } from "obsidian";
+import { App, Plugin, PluginSettingTab, Setting, FileSystemAdapter, Platform } from "obsidian";
 import { TaskView, VIEW_TYPE_TASK } from "./view";
 import {
   type Task,
@@ -14,6 +14,7 @@ import {
   advanceDue,
   keyOf,
 } from "./fsbridge";
+import { loadCenterMobile, saveCenterMobile, scanCurrentVault } from "./mobile-io";
 
 interface TaskSettings {
   /** 跨库检索的根目录，例如 D:\WenJian\knowledge；留空则只检索当前库 */
@@ -31,7 +32,7 @@ export default class TaskManager extends Plugin {
 
   async onload() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    this.refreshFromDisk();
+    await this.refreshFromDisk();
 
     this.registerView(VIEW_TYPE_TASK, (leaf) => new TaskView(leaf, this));
     this.addSettingTab(new TaskSettingTab(this.app, this));
@@ -55,7 +56,7 @@ export default class TaskManager extends Plugin {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_TASK);
   }
 
-  /** 知识库根：优先用户设置，否则用当前库根（单库模式） */
+  /** 知识库根：优先用户设置，否则用当前库根（单库模式）。仅桌面端跨库扫描使用 */
   getRoot(): string {
     if (this.settings.rootPath) return this.settings.rootPath;
     if (this.app.vault.adapter instanceof FileSystemAdapter) {
@@ -64,12 +65,24 @@ export default class TaskManager extends Plugin {
     return "";
   }
 
-  refreshFromDisk() {
-    const root = this.getRoot();
-    const data = loadCenter(root);
-    this.centerTasks = data.tasks;
-    this.ignored = data.ignored;
-    this.scanned = scanAll(root);
+  /**
+   * 从磁盘刷新数据。
+   * - 桌面：中心 tasks.json + 跨库扫描（Node fs，rootPath 可跨库）
+   * - 移动：当前库 任务/tasks.json（adapter）+ 当前库扫描（vault API，单库模式）
+   */
+  async refreshFromDisk() {
+    if (Platform.isMobile) {
+      const data = await loadCenterMobile(this.app.vault.adapter);
+      this.centerTasks = data.tasks;
+      this.ignored = data.ignored;
+      this.scanned = await scanCurrentVault(this.app, await this.loadData());
+    } else {
+      const root = this.getRoot();
+      const data = loadCenter(root);
+      this.centerTasks = data.tasks;
+      this.ignored = data.ignored;
+      this.scanned = scanAll(root);
+    }
     this.broadcastChange();
   }
 
@@ -88,8 +101,15 @@ export default class TaskManager extends Plugin {
     this.app.workspace.revealLeaf(leaf);
   }
 
-  private saveAll() {
-    saveCenter(this.getRoot(), { tasks: this.centerTasks, ignored: this.ignored });
+  private async saveAll() {
+    if (Platform.isMobile) {
+      await saveCenterMobile(this.app.vault.adapter, {
+        tasks: this.centerTasks,
+        ignored: this.ignored,
+      });
+    } else {
+      saveCenter(this.getRoot(), { tasks: this.centerTasks, ignored: this.ignored });
+    }
   }
 
   async saveSettings() {
@@ -106,7 +126,7 @@ export default class TaskManager extends Plugin {
       source: { kind: "personal" },
     };
     this.centerTasks.push(task);
-    this.saveAll();
+    await this.saveAll();
     this.broadcastChange();
     return task;
   }
@@ -117,7 +137,7 @@ export default class TaskManager extends Plugin {
     const normalized = { ...patch, recur: (patch.recur as Recur) || undefined };
     this.centerTasks = this.centerTasks.filter((t) => t.id !== exist.id);
     this.centerTasks.push({ ...exist, ...normalized });
-    this.saveAll();
+    await this.saveAll();
     this.broadcastChange();
   }
 
@@ -132,7 +152,7 @@ export default class TaskManager extends Plugin {
       }
     }
     this.centerTasks = this.centerTasks.filter((t) => t.id !== id);
-    this.saveAll();
+    await this.saveAll();
     this.broadcastChange();
   }
 
@@ -150,11 +170,11 @@ export default class TaskManager extends Plugin {
       completedAt: status === "done" ? Date.now() : undefined,
     });
     if (status === "done" && t.recur) {
-      this.spawnNext(t);
+      await this.spawnNext(t);
     }
   }
 
-  private spawnNext(source: Task) {
+  private async spawnNext(source: Task) {
     const copy: Task = {
       id: `personal_${Date.now()}`,
       name: source.name,
@@ -177,7 +197,7 @@ export default class TaskManager extends Plugin {
       source: { kind: "personal" },
     };
     this.centerTasks = [...this.centerTasks.filter((x) => x.id !== copy.id), copy];
-    this.saveAll();
+    await this.saveAll();
     this.broadcastChange();
   }
 
@@ -244,6 +264,15 @@ class TaskSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "任务管理" });
+
+    if (Platform.isMobile) {
+      containerEl.createDiv({
+        cls: "task-hint",
+        text: "移动端为单库模式：管理当前库的个人任务、插件任务与笔记 - [ ] 待办，数据存于本库 任务/tasks.json。跨库检索仅桌面端可用。",
+      });
+      return;
+    }
+
     new Setting(containerEl)
       .setName("知识库根目录")
       .setDesc(
@@ -256,7 +285,7 @@ class TaskSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.rootPath = value.trim();
             await this.plugin.saveSettings();
-            this.plugin.refreshFromDisk();
+            await this.plugin.refreshFromDisk();
           })
       );
   }

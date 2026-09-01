@@ -1,9 +1,9 @@
 {
   "id": "task-manager",
   "name": "任务管理",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "minAppVersion": "1.5.0",
-  "description": "一个按优先级排序的本地任务管理插件：总览 / 详情 / 添加 / 改状态。",
+  "description": "按优先级排序的本地任务管理插件：总览/看板/统计/子任务/周期提醒。桌面支持跨库检索，移动端单库模式。",
   "author": "THD03",
-  "isDesktopOnly": true
+  "isDesktopOnly": false
 }

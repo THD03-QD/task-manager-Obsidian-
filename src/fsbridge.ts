@@ -1,5 +1,20 @@
-import * as fs from "fs";
-import * as path from "path";
+// fsbridge：类型 + 纯逻辑（两端共享）+ 桌面端 Node fs 扫描/中心文件读写。
+//
+// 双端兼容要点：
+// - 顶层绝不 import "fs"/"path"（esbuild 会把 ESM import 提升到模块顶层，
+//   产物变成顶层 require("fs")，移动端 Capacitor 环境无 Node，模块求值即崩）。
+// - 桌面函数体内通过 lazyNode() 惰性取 fs/path；eval("require") 让 esbuild
+//   完全不做静态解析与提升，require 留在运行时按需执行。
+// - 移动端只 import 本文件的纯逻辑部分，永远不触发桌面分支。
+
+// ---------- 桌面端惰性 Node 桥 ----------
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function lazyNode(): { fs: any; path: any } {
+  // require 写在函数体内 + esbuild external（builtin-modules）→ 打包产物里
+  // require("fs") 原样保留在函数体内，运行时才解析；移动端不调用桌面分支，
+  // 永远不会触发这行（Capacitor 环境无 Node 也不受影响）。
+  return { fs: require("fs"), path: require("path") };
+}
 
 // ---------- 类型（集中于此，main/view 引用） ----------
 export type Priority = "urgent" | "high" | "medium" | "low";
@@ -51,10 +66,49 @@ export interface NewTaskInput {
 }
 
 // ---------- 路径常量 ----------
-const PLUGIN_ID = "task-manager";
-const SKIP_DIRS = new Set([
+export const PLUGIN_ID = "task-manager";
+/** 中心任务文件相对某 vault 根的路径（桌面/移动统一） */
+export const CENTER_REL = "任务/tasks.json";
+/** 扫描笔记时跳过的目录名（路径任一段命中即跳过） */
+export const SKIP_DIRS = new Set([
   ".obsidian", ".git", "node_modules", ".trash", "99-归档", ".smart-env",
 ]);
+
+/** 移动端用：相对路径（正斜杠）任一段命中 SKIP_DIRS 则跳过 */
+export function isSkippedPath(relPath: string): boolean {
+  return relPath.split("/").some((seg) => SKIP_DIRS.has(seg));
+}
+
+export interface CenterData {
+  tasks: Task[];
+  ignored: string[];
+}
+
+/** 共享：解析中心文件 JSON 文本（桌面/移动同一份逻辑） */
+export function parseCenter(text: string): CenterData {
+  try {
+    const raw = JSON.parse(text) as { tasks?: Task[]; ignored?: string[] };
+    return { tasks: raw.tasks ?? [], ignored: raw.ignored ?? [] };
+  } catch {
+    /* ignore */
+  }
+  return { tasks: [], ignored: [] };
+}
+
+/** 共享：把 v1 data.json 的 {tasks:[...]} 映射为 vault-plugin 来源任务 */
+export function tasksFromDataJson(raw: { tasks?: any[] }, vaultName: string): Task[] {
+  return (raw.tasks ?? []).map((t: any) => ({
+    id: t.id ?? `vp_${hashString(vaultName + (t.name ?? ""))}`,
+    name: t.name ?? "",
+    content: t.content ?? "",
+    priority: (t.priority as Priority) ?? "medium",
+    status: (t.status as Status) ?? "todo",
+    dueDate: t.dueDate ?? "",
+    tags: t.tags ?? [],
+    createdAt: t.createdAt ?? 0,
+    source: { kind: "vault-plugin" as const, vault: vaultName },
+  }));
+}
 
 function hashString(s: string): string {
   let h = 0;
@@ -65,11 +119,14 @@ function hashString(s: string): string {
   return Math.abs(h).toString(36);
 }
 
+// ==================== 以下为桌面端专用（Node fs，移动端不调用） ====================
+
 // ---------- 扫描 vault ----------
 export function findVaults(root: string): string[] {
+  const { fs, path } = lazyNode();
   const acc: string[] = [];
   const walk = (dir: string) => {
-    let entries: fs.Dirent[];
+    let entries: any[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
@@ -87,9 +144,10 @@ export function findVaults(root: string): string[] {
 }
 
 function collectMd(vault: string): string[] {
+  const { fs, path } = lazyNode();
   const acc: string[] = [];
   const walk = (dir: string) => {
-    let entries: fs.Dirent[];
+    let entries: any[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
@@ -108,22 +166,12 @@ function collectMd(vault: string): string[] {
 
 // ---------- 各库插件 data.json 的任务 ----------
 function readDataJson(vault: string): Task[] {
+  const { fs, path } = lazyNode();
   const f = path.join(vault, ".obsidian", "plugins", PLUGIN_ID, "data.json");
   try {
     if (fs.existsSync(f)) {
       const raw = JSON.parse(fs.readFileSync(f, "utf8")) as { tasks?: any[] };
-      const vaultName = path.basename(vault);
-      return (raw.tasks ?? []).map((t: any) => ({
-        id: t.id ?? `vp_${hashString(vault + (t.name ?? ""))}`,
-        name: t.name ?? "",
-        content: t.content ?? "",
-        priority: (t.priority as Priority) ?? "medium",
-        status: (t.status as Status) ?? "todo",
-        dueDate: t.dueDate ?? "",
-        tags: t.tags ?? [],
-        createdAt: t.createdAt ?? 0,
-        source: { kind: "vault-plugin" as const, vault: vaultName },
-      }));
+      return tasksFromDataJson(raw, path.basename(vault));
     }
   } catch {
     /* ignore */
@@ -184,6 +232,7 @@ export function detect(line: string, vault: string, notePath: string): Task | nu
 }
 
 function collectNoteTasks(vault: string): Task[] {
+  const { fs, path } = lazyNode();
   const out: Task[] = [];
   for (const p of collectMd(vault)) {
     let content = "";
@@ -202,7 +251,7 @@ function collectNoteTasks(vault: string): Task[] {
   return out;
 }
 
-// ---------- 扫描全部 vault → 所有插件任务 + 笔记待办 ----------
+// ---------- 扫描全部 vault → 所有插件任务 + 笔记待办（桌面跨库） ----------
 export function scanAll(root: string): Task[] {
   const vaults = findVaults(root);
   const out: Task[] = [];
@@ -213,25 +262,18 @@ export function scanAll(root: string): Task[] {
   return out;
 }
 
-// ---------- 中心文件读写 ----------
+// ---------- 中心文件读写（桌面，同步 fs） ----------
 export function getCenterFile(root: string): string {
+  const { path } = lazyNode();
   return path.join(root, "任务", "tasks.json");
 }
 
-export interface CenterData {
-  tasks: Task[];
-  ignored: string[];
-}
-
 export function loadCenter(root: string): CenterData {
+  const { fs } = lazyNode();
   const f = getCenterFile(root);
   try {
     if (fs.existsSync(f)) {
-      const raw = JSON.parse(fs.readFileSync(f, "utf8")) as {
-        tasks?: Task[];
-        ignored?: string[];
-      };
-      return { tasks: raw.tasks ?? [], ignored: raw.ignored ?? [] };
+      return parseCenter(fs.readFileSync(f, "utf8"));
     }
   } catch {
     /* ignore */
@@ -240,6 +282,7 @@ export function loadCenter(root: string): CenterData {
 }
 
 export function saveCenter(root: string, data: CenterData) {
+  const { fs, path } = lazyNode();
   const f = getCenterFile(root);
   fs.mkdirSync(path.dirname(f), { recursive: true });
   fs.writeFileSync(
@@ -247,10 +290,6 @@ export function saveCenter(root: string, data: CenterData) {
     JSON.stringify({ tasks: data.tasks, ignored: data.ignored }, null, 2),
     "utf8"
   );
-}
-
-export function centerFilePath(root: string): string {
-  return getCenterFile(root);
 }
 
 // ---------- 合并（中心为主 + 扫描补充，去重） ----------
@@ -313,27 +352,4 @@ export function normalizeTask(t: Task): Task {
     return s;
   });
   return { ...t, subtasks };
-}
-
-// ---------- 导出：把任务写回某个 vault 的 md（追加/更新） ----------
-export function appendToMarkdown(vault: string, relPath: string, task: Task): string {
-  const full = path.join(vault, relPath);
-  fs.mkdirSync(path.dirname(full), { recursive: true });
-  const parts: string[] = [];
-  if (task.dueDate) parts.push(`📅 ${task.dueDate}`);
-  if (task.priority === "urgent") parts.push("🔺");
-  else if (task.priority === "high") parts.push("⏫");
-  else if (task.priority === "medium") parts.push("🔼");
-  else parts.push("🔽");
-  for (const tag of task.tags) parts.push(`#${tag}`);
-  const line = `- [ ] ${task.name}${parts.length ? " " + parts.join(" ") : ""}`;
-  let existing = "";
-  try {
-    existing = fs.existsSync(full) ? fs.readFileSync(full, "utf8") : "";
-  } catch {
-    /* ignore */
-  }
-  const updated = existing.trimEnd() + "\n\n## 导出任务\n" + line + "\n";
-  fs.writeFileSync(full, updated, "utf8");
-  return full;
 }

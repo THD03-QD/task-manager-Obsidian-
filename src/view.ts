@@ -2,7 +2,7 @@
  * 任务管理视图层：总览列表(按来源分组) / 看板(拖拽) / 统计，以及任务详情、右键菜单与弹窗。
  * 数据由 TaskManager(main.ts) 提供，本模块只做展示与用户交互。
  */
-import { App, ItemView, Modal, Notice, Menu, TFile, type WorkspaceLeaf } from "obsidian";
+import { App, ItemView, Modal, Notice, Menu, Platform, TFile, type WorkspaceLeaf } from "obsidian";
 import type TaskManager from "./main";
 import type { Task, Priority, Status, NewTaskInput, SubTask, Recur } from "./fsbridge";
 import { RECUR_LABEL } from "./fsbridge";
@@ -171,8 +171,9 @@ export class TaskView extends ItemView {
     });
     const rescanBtn = toolbar.createEl("button", { text: "重新扫描" });
     rescanBtn.addEventListener("click", () => {
-      this.plugin.refreshFromDisk();
-      new Notice("已重新扫描全部知识库任务");
+      void this.plugin.refreshFromDisk().then(() => {
+        new Notice(Platform.isMobile ? "已重新扫描本库任务" : "已重新扫描全部知识库任务");
+      });
     });
 
     const list = container.createDiv({ cls: "task-list" });
@@ -180,7 +181,9 @@ export class TaskView extends ItemView {
     if (all.length === 0) {
       container.createDiv({
         cls: "task-empty",
-        text: "暂无任务。点「＋ 添加任务」创建，或到插件设置里配置「知识库根目录」以跨库检索。",
+        text: Platform.isMobile
+          ? "暂无任务。点「＋ 添加任务」创建，或用 - [ ] 语法在笔记里写待办（支持 ⏫优先级 📅日期 #标签）。"
+          : "暂无任务。点「＋ 添加任务」创建，或到插件设置里配置「知识库根目录」以跨库检索。",
       });
       return;
     }
